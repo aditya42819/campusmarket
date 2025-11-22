@@ -6,21 +6,30 @@
 
 using json = nlohmann::json;
 
+// Struct to hold individual event stock purchase
+struct EventPurchase {
+    bool buyYes;
+    int amount;
+    int quantity;
+};
+
+// User struct: stores username, password, and purchases per event
 struct User {
     std::string username;
     std::string password;
-    std::map<int, std::vector<std::string>> betHistory; // market id => YES/NO string per bet
+    std::map<int, std::vector<EventPurchase>> eventHistory; // event id => purchases
 };
 
 std::map<std::string, User> users;
 
+// Market class: one for each event
 class Market {
 public:
     int id;
     std::string title;
     bool resolved;
     bool outcomeYes;
-    std::map<std::string, int> yesShares, noShares;
+    std::map<std::string, int> yesShares, noShares; // shares per user
 
     Market(int id, const std::string& title)
         : id(id), title(title), resolved(false), outcomeYes(false) {}
@@ -74,7 +83,7 @@ int main() {
         return crow::response(401, "Invalid credentials");
     });
 
-    // Fetch markets
+    // Fetch events
     CROW_ROUTE(app, "/api/markets")
     ([] {
         json resp = json::array();
@@ -82,25 +91,29 @@ int main() {
         return crow::response(resp.dump());
     });
 
-    // Make a trade, save per-user bet history
+    // Purchase event (YES/NO), specifying amount and quantity
     CROW_ROUTE(app, "/api/trade").methods("POST"_method)
     ([](const crow::request& req) {
         auto body = json::parse(req.body);
-        int id = body["id"], yes = body["buyYes"];
+        int id = body["id"];
+        bool yes = body["buyYes"];
         std::string user = body["user"];
+        int amount = body["amount"];
+        int quantity = body["quantity"];
         Market* m = findMarket(id);
         if (m && !m->resolved && users.count(user)) {
+            // Update user shares for each event
             if (yes)
-                m->yesShares[user]++;
+                m->yesShares[user] += quantity;
             else
-                m->noShares[user]++;
-            users[user].betHistory[id].push_back(yes ? "YES" : "NO");
+                m->noShares[user] += quantity;
+            users[user].eventHistory[id].push_back(EventPurchase{yes, amount, quantity});
             return crow::response(200);
         }
         return crow::response(400);
     });
 
-    // Resolve market
+    // Resolve event outcome
     CROW_ROUTE(app, "/api/resolve").methods("POST"_method)
     ([](const crow::request& req) {
         auto body = json::parse(req.body);
@@ -115,15 +128,23 @@ int main() {
         return crow::response(400);
     });
 
-    // Per-user bet history
+    // Per-user event purchase history, including amount/quantity
     CROW_ROUTE(app, "/api/history").methods("POST"_method)
     ([](const crow::request& req) {
         auto body = json::parse(req.body);
         std::string username = body["username"];
         if (users.count(username)) {
             json hist;
-            for (auto& [marketId, bets] : users[username].betHistory)
-                hist[std::to_string(marketId)] = bets;
+            for (auto& [eventId, purchases] : users[username].eventHistory) {
+                hist[std::to_string(eventId)] = json::array();
+                for (auto& e : purchases) {
+                    hist[std::to_string(eventId)].push_back({
+                        {"buyYes", e.buyYes},
+                        {"amount", e.amount},
+                        {"quantity", e.quantity}
+                    });
+                }
+            }
             return crow::response(hist.dump());
         }
         return crow::response(404, "No such user");
